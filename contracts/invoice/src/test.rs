@@ -3169,6 +3169,93 @@ fn setup_confirmed_invoice() -> (
 // ============== SUPPORTED ASSET TESTS ==============
 
 #[test]
+fn test_add_supported_asset_requires_admin_authorization() {
+    let (env, client, _, _, _, supported) = setup();
+    let asset = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+    let count = client.get_supported_asset_count();
+
+    for signed_by_non_admin in [false, true] {
+        // Replace setup's blanket authorization with either no signature or
+        // a signature for this exact invocation from someone other than admin.
+        env.mock_auths(&[]);
+        if signed_by_non_admin {
+            env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+                address: &non_admin,
+                invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "add_supported_asset",
+                    args: (asset.clone(),).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }]);
+        }
+
+        assert!(client.try_add_supported_asset(&asset).is_err());
+        assert!(!client.is_supported_asset(&asset));
+        assert!(client.is_supported_asset(&supported));
+        assert_eq!(client.get_supported_asset_count(), count);
+    }
+}
+
+#[test]
+fn test_remove_supported_asset_requires_admin_authorization() {
+    let (env, client, _, _, _, asset) = setup();
+    let non_admin = Address::generate(&env);
+    let count = client.get_supported_asset_count();
+
+    for signed_by_non_admin in [false, true] {
+        env.mock_auths(&[]);
+        if signed_by_non_admin {
+            env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+                address: &non_admin,
+                invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "remove_supported_asset",
+                    args: (asset.clone(),).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }]);
+        }
+
+        assert!(client.try_remove_supported_asset(&asset).is_err());
+        assert!(client.is_supported_asset(&asset));
+        assert_eq!(client.get_supported_asset_count(), count);
+    }
+}
+
+#[test]
+fn test_is_supported_asset_renews_near_expiry_entry_without_adding_unknown_asset() {
+    let (env, client, _, _, _, asset) = setup();
+    let unknown = Address::generate(&env);
+    let key = crate::DataKey::SupportedAsset(asset.clone());
+    let unknown_key = crate::DataKey::SupportedAsset(unknown.clone());
+    let count = client.get_supported_asset_count();
+    let initial_ttl = env.as_contract(&client.address, || env.storage().persistent().get_ttl(&key));
+
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + initial_ttl - 1);
+    env.as_contract(&client.address, || {
+        assert_eq!(env.storage().persistent().get_ttl(&key), 1);
+    });
+
+    assert!(client.is_supported_asset(&asset));
+    env.as_contract(&client.address, || {
+        assert_eq!(env.storage().persistent().get_ttl(&key), TTL_EXTEND_TO);
+    });
+    assert!(!client.is_supported_asset(&unknown));
+    env.as_contract(&client.address, || {
+        assert!(!env.storage().persistent().has(&unknown_key));
+    });
+    assert_eq!(client.get_supported_asset_count(), count);
+
+    // The renewed entry survives beyond its original live-until ledger.
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + 2);
+    assert!(client.is_supported_asset(&asset));
+}
+
+#[test]
 fn test_add_supported_asset() {
     let (env, client, _, _, _, _) = setup();
     let asset = Address::generate(&env);
